@@ -1,7 +1,17 @@
 defmodule ExVmstats do
   use GenServer
 
-  defstruct [:backend, :use_histogram, :interval, :sched_time, :prev_sched, :timer_ref, :namespace, :prev_io, :prev_gc]
+  defstruct [
+    :backend,
+    :use_histogram,
+    :interval,
+    :sched_time,
+    :prev_sched,
+    :timer_ref,
+    :namespace,
+    :prev_io,
+    :prev_gc
+  ]
 
   @timer_msg :interval_elapsed
 
@@ -23,7 +33,7 @@ defmodule ExVmstats do
 
     prev_sched =
       :erlang.statistics(:scheduler_wall_time)
-      |> Enum.sort
+      |> Enum.sort()
 
     backend =
       Application.get_env(:ex_vmstats, :backend, :ex_statsd)
@@ -49,8 +59,8 @@ defmodule ExVmstats do
   def handle_info({:timeout, _timer_ref, @timer_msg}, state) do
     %__MODULE__{interval: interval, namespace: namespace, backend: backend} = state
 
-    metric_name = fn (name) -> metric(namespace, name) end
-    memory_metric_name = fn (name) -> memory_metric(namespace, name) end
+    metric_name = fn name -> metric(namespace, name) end
+    memory_metric_name = fn name -> memory_metric(namespace, name) end
 
     # Processes
     gauge_or_hist(state, :erlang.system_info(:process_count), metric_name.("proc_count"))
@@ -58,32 +68,39 @@ defmodule ExVmstats do
 
     # Messages in queues
     total_messages =
-      Enum.reduce Process.list, 0, fn pid, acc ->
+      Enum.reduce(Process.list(), 0, fn pid, acc ->
         case Process.info(pid, :message_queue_len) do
           {:message_queue_len, count} -> count + acc
           _ -> acc
         end
-      end
+      end)
 
     gauge_or_hist(state, total_messages, metric_name.("messages_in_queues"))
 
     # Modules loaded
-    gauge_or_hist(state, length(:code.all_loaded), metric_name.("modules"))
+    gauge_or_hist(state, length(:code.all_loaded()), metric_name.("modules"))
 
     # Queued up processes (lower is better)
     gauge_or_hist(state, :erlang.statistics(:run_queue), metric_name.("run_queue"))
 
     # Error logger backlog (lower is better)
-    error_logger_backlog =
-      Process.whereis(:error_logger)
-      |> Process.info(:message_queue_len)
-      |> elem(1)
+    case Process.whereis(:error_logger) do
+      pid when is_pid(pid) ->
+        error_logger_backlog =
+          pid
+          |> Process.info(:message_queue_len)
+          |> elem(1)
 
-    gauge_or_hist(state, error_logger_backlog, metric_name.("error_logger_queue_len"))
+        _ = gauge_or_hist(state, error_logger_backlog, metric_name.("error_logger_queue_len"))
+        :ok
+
+      _ ->
+        :ok
+    end
 
     # Memory usage. There are more options available, but not all were kept.
     # Memory usage is in bytes.
-    mem = :erlang.memory
+    mem = :erlang.memory()
 
     for metric <- [:total, :processes_used, :atom_used, :binary, :ets] do
       gauge_or_hist(state, Keyword.get(mem, metric), memory_metric_name.(metric))
@@ -106,7 +123,7 @@ defmodule ExVmstats do
 
     backend.counter(reds, metric_name.("reductions"))
 
-    #Scheduler wall time
+    # Scheduler wall time
     sched =
       case state.sched_time do
         :enabled ->
@@ -120,13 +137,15 @@ defmodule ExVmstats do
           end
 
           new_sched
+
         _ ->
           nil
       end
 
     timer_ref = :erlang.start_timer(interval, self(), @timer_msg)
 
-    {:noreply, %{state | timer_ref: timer_ref, prev_sched: sched, prev_io: {input, output}, prev_gc: gc}}
+    {:noreply,
+     %{state | timer_ref: timer_ref, prev_sched: sched, prev_io: {input, output}, prev_gc: gc}}
   end
 
   defp metric(namespace, metric) do
@@ -140,7 +159,9 @@ defmodule ExVmstats do
   defp gauge_or_hist(%__MODULE__{use_histogram: true, backend: backend}, value, metric) do
     backend.histogram(value, metric)
   end
-  defp gauge_or_hist(%__MODULE__{backend: backend}, value, metric), do: backend.gauge(value, metric)
+
+  defp gauge_or_hist(%__MODULE__{backend: backend}, value, metric),
+    do: backend.gauge(value, metric)
 
   defp get_backend(:ex_statsd), do: ExVmstats.Backends.ExStatsD
   defp get_backend(backend), do: backend
@@ -158,7 +179,8 @@ defmodule ExVmstats do
   end
 
   defp wall_time_diff(prev_sched, new_sched) do
-    for {{i, prev_active, prev_total}, {i, new_active, new_total}} <- Enum.zip(prev_sched, new_sched) do
+    for {{i, prev_active, prev_total}, {i, new_active, new_total}} <-
+          Enum.zip(prev_sched, new_sched) do
       {i, new_active - prev_active, new_total - prev_total}
     end
   end
